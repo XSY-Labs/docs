@@ -1,4 +1,11 @@
+# .claude/ — track rules (team-shared), ignore agents and settings.local.json
+# (agent files and settings.local.json contain machine-specific absolute paths)
 .claude/*
+!.claude/rules/
+.claude/rules/*
+!.claude/rules/*.md
+
+# docs/ — planning artifacts stay local
 docs/brainstorms/*.md
 docs/plans/*.md
 docs/solutions/*.md
