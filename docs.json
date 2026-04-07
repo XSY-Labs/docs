@@ -32,6 +32,36 @@
             "pages": [
               "index"
             ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "guides/deployed-addresses"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Protocol",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "protocol/architecture/overview",
+              "protocol/architecture/flows",
+              "protocol/architecture/state",
+              "protocol/architecture/contracts",
+              "protocol/architecture/tokens-and-fees"
+            ]
+          },
+          {
+            "group": "Coming soon",
+            "pages": [
+              "protocol/cross-chain",
+              "protocol/security",
+              "protocol/sdk-integration",
+              "protocol/partner-integration"
+            ]
           }
         ]
       }
