@@ -1,0 +1,15 @@
+{
+  "name": "docs.yieldpoint.io",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "mint dev",
+    "build": "mint validate",
+    "check:links": "mint broken-links",
+    "check:a11y": "mint a11y",
+    "check": "mint validate && mint broken-links && mint a11y",
+    "export": "mint export",
+    "update-cli": "mint update"
+  },
+  "author": "brandonaaskov",
+  "packageManager": "pnpm@10.33.0"
+}

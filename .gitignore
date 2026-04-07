@@ -1,0 +1,36 @@
+.claude/*
+docs/brainstorms/*.md
+docs/plans/*.md
+docs/solutions/*.md
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node / Mintlify CLI
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Mintlify local build
+.mintlify/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
