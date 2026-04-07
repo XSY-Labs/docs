@@ -3,4 +3,39 @@ title: "State distribution"
 description: "Where YieldPoint protocol state lives across hub and spoke chains, and how operations route."
 ---
 
-{/* TODO: content lands in Unit 4 */}
+All YieldPoint vault state lives on Base (the hub). Spoke chains only hold token balances and allowances — the familiar ERC-20 surface. This page lists exactly which data lives where, and which operations execute on which chain.
+
+## Hub vs spoke state
+
+Local ERC-20 state (balances, allowances) lives on each spoke chain because the OFT contracts track it there. Everything else — supply, share price, withdrawal queue — lives on the hub because those values are global to the protocol and must be consistent regardless of which chain you query from.
+
+| Data | Location | Rationale |
+|---|---|---|
+| `balanceOf(user)` | Spoke | OFT tracks local balances per chain. |
+| `allowance(owner, spender)` | Spoke | ERC-20 allowances are local. |
+| `totalSupply()` | Hub | Total minted supply (includes tokens locked in the OFT adapter on the hub). |
+| `totalAssets()` | Hub | Vault's total managed assets, including custodian-held UTY. |
+| `convertToAssets(shares)` | Hub | Requires the global share price, which is a hub-side computation. |
+| `convertToShares(assets)` | Hub | Requires the global share price. |
+| `previewDeposit(assets)` | Hub | Vault math lives on the hub. |
+| `previewRedeem(shares)` | Hub | Vault math lives on the hub. |
+| `maxDeposit(receiver)` | Hub | Vault limits are hub state. |
+| `maxRedeem(owner)` | Hub | Vault limits are hub state. |
+| `pendingRedeemRequest(id, controller)` | Hub | Withdrawal queue state. |
+| `claimableRedeemRequest(id, controller)` | Hub | Withdrawal queue state. |
+| `getWithdrawalRequests(controller)` | Hub | User's pending requests. |
+
+## Operation routing
+
+Reading a balance or approving a spender is a local call on whatever chain you're on. Depositing, redeeming, or requesting a redemption routes to the hub — either directly (if you're on Base) or via the spoke `VaultInterface` and the LayerZero composer (if you're on a spoke).
+
+| Operation | Type | Executes on | Notes |
+|---|---|---|---|
+| `balanceOf(user)` | Read | Spoke | Local OFT balance. |
+| `approve(spender, amount)` | Write | Spoke | Local ERC-20 allowance. |
+| `transfer(to, amount)` | Write | Spoke | OFT handles cross-chain if needed. |
+| `deposit(assets, receiver)` (UTY) | Write | Hub | Base only — no cross-chain UTY minting. |
+| `deposit(assets, receiver)` (yUTY) | Write | Hub | Via spoke `VaultInterface` → composer when called from a spoke chain. |
+| `requestRedeem` / `redeem` (UTY) | Write | Hub | Base only — no cross-chain UTY redemption. |
+| `requestRedeem` / `redeem` (yUTY) | Write | Hub | Via spoke `VaultInterface` → composer when called from a spoke chain. |
+| `redeemById(requestId, receiver)` | Write | Hub | Direct claim by withdrawal request ID. |

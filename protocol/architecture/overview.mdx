@@ -3,4 +3,34 @@ title: "Overview"
 description: "How the YieldPoint protocol is structured: hub-spoke model, ERC-7540 vaults, and LayerZero messaging."
 ---
 
-{/* TODO: content lands in Unit 7 */}
+This section covers the YieldPoint protocol architecture for integrators and protocol developers building on UTY and yUTY. You'll find the contract layout, the token model, fee economics, state distribution, and the core operation flows.
+
+## Design principles
+
+YieldPoint is built around four design principles that shape every contract and flow:
+
+1. **Single source of truth.** All vault state lives on Base. Spoke chains hold only token balances and allowances — the familiar ERC-20 surface.
+2. **Standard interfaces.** ERC-7540 compliance on the hub enables DeFi integrations and asynchronous withdrawals out of the box.
+3. **Gas abstraction.** You transact on your preferred chain. The protocol handles cross-chain messaging and pays the hub-chain (Base) gas when routing back to a spoke.
+4. **Minimal trust assumptions.** Cross-chain operations rely on LayerZero's security model. No custom bridge, no additional trust layer.
+
+## Mental model
+
+Base is the hub. All vault state — share price, withdrawal queue, managed assets — lives there. Avalanche and Katana are spoke chains: you hold UTY and yUTY as ERC-20 tokens and trigger cross-chain operations from spokes. LayerZero carries the messages between them. Whether you deposit on Base directly or from a spoke chain, the vault on Base is the thing that actually mints or redeems shares.
+
+## Explore the architecture
+
+<Columns cols={2}>
+  <Card title="Core flows" icon="git-branch" href="/protocol/architecture/flows">
+    How deposits, redemptions, and cross-chain operations route through the contracts.
+  </Card>
+  <Card title="State distribution" icon="database" href="/protocol/architecture/state">
+    Where protocol state lives across hub and spoke chains, and how operations route.
+  </Card>
+  <Card title="Contracts" icon="file-code" href="/protocol/architecture/contracts">
+    The Solidity contracts, how they're organized by layer, and how they compose.
+  </Card>
+  <Card title="Tokens and fees" icon="coins" href="/protocol/architecture/tokens-and-fees">
+    How UTY and yUTY move across chains as OFTs, and the flat fee model on spoke chains.
+  </Card>
+</Columns>
