@@ -1,91 +1,110 @@
 ---
 title: "Contracts"
-description: "The YieldPoint Solidity contracts, how they're organized by layer, and how they compose."
+description: "Deployed YieldPoint contract addresses, plus the contract layer organization and inheritance chains."
 ---
 
-The YieldPoint contracts split into six directories under `src/`. This page shows the file layout, how the layers depend on each other, the inheritance chains for each vault, and a reference table of the key contract files.
+YieldPoint deploys on Base (hub) and two spoke chains (Avalanche and Katana). Contract state lives on the hub; spoke chains hold tokens and interact with the hub via LayerZero messages. This page lists the deployed addresses for each chain, then walks through the contract architecture: layer organization, vault inheritance, the LayerZero integration, and a reference table of the key contracts.
 
-## File layout
+## Deployed addresses
+
+<Note>
+  The `UTY` contract on both Avalanche and Katana uses the same address as `UTY` on Base. Similarly for `yUTY`. This is intentional — YieldPoint used `CREATE3` to produce identical addresses across EVM chains for contracts deployed with the same deployer and salt, so you can hard-code one address per token and route by chain ID.
+</Note>
+
+### Base (hub)
+
+- **Chain ID:** `8453`
+- **LayerZero EID:** `30184`
+
+| Contract | Address | Notes |
+|---|---|---|
+| `UTY vault` | `0xBA515304d8153c4b162dC79f867E152DF9c127eb` | ERC-7540 async vault. Deposit USDC to mint UTY 1:1. |
+| `UTY adapter` (`ShareOFTAdapter`) | `0xC6fE7C5010621Ab3CA5F4C018fAd632f78b4D3f1` | Lockbox adapter for cross-chain UTY transfers. |
+| `yUTY vault` | `0xBa515EEd0119aCB7CFE8fAb3ACD6b362f3ed5319` | ERC-7540 async vault for yUTY. 7-day bonding on withdrawals. |
+| `yUTY adapter` (`ShareOFTAdapter`) | `0xCfD564bbf4e50A248835aCe8Ca889f73217162d4` | Lockbox adapter for cross-chain yUTY transfers. |
+| `yUTY composer` | `0x2eF787561f3A79371Ee1165B7BeE6dc6ffB09832` | Hub-side cross-chain message handler for yUTY deposits and redemptions from spoke chains. |
+| `USDC` (external) | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | USDC on Base. The underlying asset for UTY. |
+
+Base is the hub chain — all vault state, share price, and withdrawal queue management lives here. UTY is minted and redeemed directly on Base; cross-chain UTY operations go through the adapter. yUTY is minted and redeemed on Base (either directly or via cross-chain composer calls from spokes).
+
+### Avalanche (spoke)
+
+- **Chain ID:** `43114`
+- **LayerZero EID:** `30106`
+
+| Contract | Address | Notes |
+|---|---|---|
+| `UTY OFT` | `0xBA515304d8153c4b162dC79f867E152DF9c127eb` | Mint/burn OFT on Avalanche. Same address as the Base UTY vault via CREATE3. |
+| `yUTY OFT` | `0xBa515EEd0119aCB7CFE8fAb3ACD6b362f3ed5319` | Mint/burn OFT on Avalanche. Same address as the Base yUTY vault via CREATE3. |
+| `yUTY VaultInterface` | `0x110d9c781D30A99f61154b5d696772AcC941a7FC` | Spoke-side proxy for cross-chain yUTY deposits and redemptions. Charges flat fees on cross-chain calls. |
+| `yUTY composer` (hub ref) | `0x2eF787561f3A79371Ee1165B7BeE6dc6ffB09832` | LayerZero peer reference — same address as the hub composer on Base. Not deployed on Avalanche; listed as the cross-chain routing target. |
+
+#### Avalanche flat fees
+
+| Fee | Value | Raw uint256 (18 decimals) |
+|---|---|---|
+| `depositFlatFee` (UTY) | `0.14 UTY` | `140000000000000000` |
+| `redeemFlatFee` (yUTY) | `0.21 yUTY` | `210000000000000000` |
+
+Fees are charged by the spoke `yUTY VaultInterface` on cross-chain deposit and redeem calls. They cover the per-message LayerZero gas cost for spoke-to-hub and hub-to-spoke routing. The fees are held as token balances in the `VaultInterface` contract and swept periodically by the operations role.
+
+### Katana (spoke)
+
+- **Chain ID:** `747474`
+- **LayerZero EID:** `30375`
+
+| Contract | Address | Notes |
+|---|---|---|
+| `UTY OFT` | `0xBA515304d8153c4b162dC79f867E152DF9c127eb` | Mint/burn OFT on Katana. Same address as the Base UTY vault via CREATE3. |
+| `yUTY OFT` | `0xBa515EEd0119aCB7CFE8fAb3ACD6b362f3ed5319` | Mint/burn OFT on Katana. Same address as the Base yUTY vault via CREATE3. |
+| `yUTY VaultInterface` | `0x4e1a5a4279241f197b307d69bC23fc5aE2461caC` | Spoke-side proxy for cross-chain yUTY deposits and redemptions. Charges flat fees on cross-chain calls. |
+| `yUTY composer` (hub ref) | `0x2eF787561f3A79371Ee1165B7BeE6dc6ffB09832` | LayerZero peer reference — same address as the hub composer on Base. Not deployed on Katana; listed as the cross-chain routing target. |
+
+#### Katana flat fees
+
+| Fee | Value | Raw uint256 (18 decimals) |
+|---|---|---|
+| `depositFlatFee` (UTY) | `0.14 UTY` | `140000000000000000` |
+| `redeemFlatFee` (yUTY) | `0.21 yUTY` | `210000000000000000` |
+
+Fees are charged by the spoke `yUTY VaultInterface` on cross-chain deposit and redeem calls, same pattern as Avalanche.
+
+_Addresses sourced from the YieldPoint contracts repo at commit `730f599e` on 2026-04-07. Re-sync when the contracts repo deploys new addresses._
+
+## Architectural layers
+
+The YieldPoint contracts are organized into four architectural layers plus a LayerZero integration column. Each layer depends on the layer below it: Examples extend Extensions, which extend Core, which implements Interfaces. The LayerZero column sits in parallel with its own internal structure.
 
 <Tree>
-  <Tree.File name="UTYAsyncVaultV1.sol" />
-  <Tree.Folder name="examples" defaultOpen>
-    <Tree.File name="UTY.sol" />
-    <Tree.File name="yUTY.sol" />
+  <Tree.Folder name="Examples (deployable)" defaultOpen>
+    <Tree.File name="UTY" />
+    <Tree.File name="yUTY" />
   </Tree.Folder>
-  <Tree.Folder name="extensions" defaultOpen>
-    <Tree.File name="ERC20AuthorizationUpgradeable.sol" />
-    <Tree.File name="PausableWithPauserAuth.sol" />
-    <Tree.File name="UTYAsyncVaultV1Custodian.sol" />
-    <Tree.File name="UTYAsyncVaultV1Ethena.sol" />
-    <Tree.File name="UTYAsyncVaultV1Instant.sol" />
+  <Tree.Folder name="Extensions (mixins)" defaultOpen>
+    <Tree.File name="UTYAsyncVaultV1Custodian" />
+    <Tree.File name="UTYAsyncVaultV1Instant" />
+    <Tree.File name="UTYAsyncVaultV1Ethena" />
+    <Tree.File name="ERC20AuthorizationUpgradeable" />
+    <Tree.File name="PausableWithPauserAuth" />
   </Tree.Folder>
-  <Tree.Folder name="interfaces">
-    <Tree.File name="IERC7540.sol" />
-    <Tree.File name="IERC7575Minimal.sol" />
-    <Tree.File name="IStakedUSDeCooldown.sol" />
-    <Tree.File name="IUTYAsyncVaultV1.sol" />
+  <Tree.Folder name="Core (abstract base)" defaultOpen>
+    <Tree.File name="UTYAsyncVaultV1" />
   </Tree.Folder>
-  <Tree.Folder name="layerzero" defaultOpen>
-    <Tree.File name="OFTExtended.sol" />
-    <Tree.File name="ShareOFTAdapter.sol" />
-    <Tree.File name="UTYVaultComposer.sol" />
-    <Tree.File name="UTYVaultInterface.sol" />
-    <Tree.Folder name="lib">
-      <Tree.File name="VaultComposerSyncPatched.sol" />
-    </Tree.Folder>
+  <Tree.Folder name="Interfaces">
+    <Tree.File name="IUTYAsyncVaultV1" />
+    <Tree.File name="IERC7540" />
+    <Tree.File name="IERC7575Minimal" />
+    <Tree.File name="IStakedUSDeCooldown" />
   </Tree.Folder>
-  <Tree.Folder name="mocks">
-    <Tree.File name="MockCustodianVault.sol" />
-    <Tree.File name="MockEndpoint.sol" />
-    <Tree.File name="MockERC20.sol" />
-    <Tree.File name="MockInstantCustodianVault.sol" />
-    <Tree.File name="MockInstantVault.sol" />
-    <Tree.File name="MockMintableOFT.sol" />
-    <Tree.File name="MockUTYAsyncVaultV1.sol" />
+  <Tree.Folder name="LayerZero integration" defaultOpen>
+    <Tree.File name="ShareOFTAdapter" />
+    <Tree.File name="UTYVaultComposer" />
+    <Tree.File name="OFTExtended" />
+    <Tree.File name="UTYVaultInterface" />
   </Tree.Folder>
 </Tree>
 
-## Layer dependency
-
-The contracts are organized into four layers plus a LayerZero integration column. Examples at the top depend on Extensions, which depend on Core, which depends on Interfaces. LayerZero sits as a parallel column with its own internal structure.
-
-```mermaid
-%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%
-flowchart TB
-  subgraph Examples["Examples (deployable)"]
-    UTY[UTY.sol]
-    yUTY[yUTY.sol]
-  end
-  subgraph Extensions["Extensions (mixins)"]
-    Custodian[UTYAsyncVaultV1Custodian]
-    Instant[UTYAsyncVaultV1Instant]
-    Ethena[UTYAsyncVaultV1Ethena]
-    ERC20Auth[ERC20AuthorizationUpgradeable]
-    Pausable[PausableWithPauserAuth]
-  end
-  subgraph Core["Core (abstract)"]
-    Base[UTYAsyncVaultV1.sol]
-  end
-  subgraph Interfaces["Interfaces"]
-    I7540[IERC7540]
-    I7575[IERC7575Minimal]
-    IUTY[IUTYAsyncVaultV1]
-    IEthena[IStakedUSDeCooldown]
-  end
-  subgraph LayerZero["LayerZero integration"]
-    direction TB
-    Adapter[ShareOFTAdapter]
-    Composer[UTYVaultComposer]
-    OFT[OFTExtended]
-    VI[UTYVaultInterface]
-  end
-  Examples --> Extensions
-  Extensions --> Core
-  Core --> Interfaces
-```
-
-Mocks under `src/mocks/` are test scaffolding and are not part of the runtime dependency graph.
+The layers are listed in dependency order — top to bottom matches the dependency direction. Test mocks are not part of the runtime dependency graph and are omitted from this view.
 
 ## Vault inheritance
 
@@ -103,7 +122,7 @@ The base vault inherits from seven upgradeable OpenZeppelin and YieldPoint contr
 
 ### UTY vault configuration
 
-`UTY.sol` extends `UTYAsyncVaultV1` with two extensions plus an override:
+`UTY` extends `UTYAsyncVaultV1` with two extensions plus an override:
 
 - `UTYAsyncVaultV1Custodian` — adds the custodian sweep, `totalManagedAssets` tracking, `totalAssets()` override, and emergency write-down via `reduceTotalManagedAssets()`
 - `UTYAsyncVaultV1Instant` — adds the instant redemption path below a configurable threshold
@@ -115,7 +134,7 @@ The base vault inherits from seven upgradeable OpenZeppelin and YieldPoint contr
 
 ### yUTY vault configuration
 
-`yUTY.sol` extends `UTYAsyncVaultV1` directly, without the custodian or instant extensions:
+`yUTY` extends `UTYAsyncVaultV1` directly, without the custodian or instant extensions:
 
 - Async-only ERC-7540 vault — no instant redemption
 - 7-day unbonding period for all withdrawals
@@ -127,35 +146,35 @@ The LayerZero integration layer splits between hub-side and spoke-side contracts
 
 ### Hub-side (Base)
 
-- `ShareOFTAdapter.sol` — OFT adapter wrapping the vault's share token. Uses the lockbox model: tokens sent cross-chain are locked in the adapter, not burned. Inherits `PausableWithPauserAuth` for bridge-level pause control.
-- `UTYVaultComposer.sol` — handles incoming cross-chain `lzCompose` messages, executes vault operations on behalf of the caller, and manages refund recovery for failed composes. Extends `VaultComposerSyncPatched` (the YieldPoint patched version of the LayerZero base composer) and `Ownable2Step`.
+- `ShareOFTAdapter` — OFT adapter wrapping the vault's share token. Uses the lockbox model: tokens sent cross-chain are locked in the adapter, not burned. Inherits `PausableWithPauserAuth` for bridge-level pause control.
+- `UTYVaultComposer` — handles incoming cross-chain `lzCompose` messages, executes vault operations on behalf of the caller, and manages refund recovery for failed composes. Extends `VaultComposerSyncPatched` (the YieldPoint patched version of the LayerZero base composer) and `Ownable2Step`.
 
 ### Spoke-side (Avalanche, Katana)
 
-- `OFTExtended.sol` — the UTY and yUTY token representation on spoke chains. Mint/burn model: tokens arriving from the hub are minted, tokens leaving are burned. Extends `OFTUpgradeable`, `ERC20AuthorizationUpgradeable`, and `Ownable2StepUpgradeable`.
-- `UTYVaultInterface.sol` — the spoke-chain proxy that makes yUTY deposits and redemptions feel local to a user on Avalanche or Katana. Charges flat fees on cross-chain calls (see [Tokens and fees](/protocol/architecture/tokens-and-fees)). Uses `AccessControl`, ERC-7201 namespaced storage, and maintains a per-user pending-claims counter that prevents double-spending of claim credits.
+- `OFTExtended` — the UTY and yUTY token representation on spoke chains. Mint/burn model: tokens arriving from the hub are minted, tokens leaving are burned. Extends `OFTUpgradeable`, `ERC20AuthorizationUpgradeable`, and `Ownable2StepUpgradeable`.
+- `UTYVaultInterface` — the spoke-chain proxy that makes yUTY deposits and redemptions feel local to a user on Avalanche or Katana. Charges flat fees on cross-chain calls (see [Tokens and fees](/protocol/architecture/tokens-and-fees)). Uses `AccessControl`, ERC-7201 namespaced storage, and maintains a per-user pending-claims counter that prevents double-spending of claim credits.
 
-## Key contract files
+## Key contracts
 
 | Contract | Purpose | Deployment |
 |---|---|---|
-| `UTYAsyncVaultV1.sol` | Base vault implementation (abstract) | Hub only |
-| `UTYAsyncVaultV1Custodian.sol` | Custodian sweep + `fundRedemptions` extension | Hub only |
-| `UTYAsyncVaultV1Instant.sol` | Instant redemption extension | Hub only (UTY) |
-| `PausableWithPauserAuth.sol` | Bridge-level pause (ERC-7201 namespaced) | Hub only |
-| `ERC20AuthorizationUpgradeable.sol` | EIP-3009 implementation | All chains |
-| `UTYVaultComposer.sol` | Cross-chain message handler + refund recovery | Hub only |
-| `UTYVaultInterface.sol` | Spoke vault proxy + access control + flat fees + pending-claims counter | Spoke chains |
-| `OFTExtended.sol` | Extended OFT token (UTY/yUTY on spokes) | Spoke chains |
-| `ShareOFTAdapter.sol` | Hub OFT lockbox + bridge-level pause | Hub only |
+| `UTYAsyncVaultV1` | Base vault implementation (abstract) | Hub only |
+| `UTYAsyncVaultV1Custodian` | Custodian sweep + `fundRedemptions` extension | Hub only |
+| `UTYAsyncVaultV1Instant` | Instant redemption extension | Hub only (UTY) |
+| `PausableWithPauserAuth` | Bridge-level pause (ERC-7201 namespaced) | Hub only |
+| `ERC20AuthorizationUpgradeable` | EIP-3009 implementation | All chains |
+| `UTYVaultComposer` | Cross-chain message handler + refund recovery | Hub only |
+| `UTYVaultInterface` | Spoke vault proxy + access control + flat fees + pending-claims counter | Spoke chains |
+| `OFTExtended` | Extended OFT token (UTY/yUTY on spokes) | Spoke chains |
+| `ShareOFTAdapter` | Hub OFT lockbox + bridge-level pause | Hub only |
 
 ## Example contracts
 
-The `src/examples/` directory contains concrete implementations ready for deployment:
+YieldPoint ships two concrete vault implementations ready for deployment:
 
 | Contract | Description | Extends |
 |---|---|---|
-| `UTY.sol` | Unity stablecoin vault (1:1 USDC peg, custodian sweep, instant redemption) | `UTYAsyncVaultV1`, `UTYAsyncVaultV1Instant`, `UTYAsyncVaultV1Custodian` |
-| `yUTY.sol` | Yield-bearing vault shares for UTY (async-only, no instant redemption) | `UTYAsyncVaultV1` |
+| `UTY` | Unity stablecoin vault (1:1 USDC peg, custodian sweep, instant redemption) | `UTYAsyncVaultV1`, `UTYAsyncVaultV1Instant`, `UTYAsyncVaultV1Custodian` |
+| `yUTY` | Yield-bearing vault shares for UTY (async-only, no instant redemption) | `UTYAsyncVaultV1` |
 
-These contracts include hardcoded names, symbols, and default configuration (7-day bonding period, unlimited max assets).
+Both contracts include hardcoded names, symbols, and default configuration (7-day bonding period, unlimited max assets).

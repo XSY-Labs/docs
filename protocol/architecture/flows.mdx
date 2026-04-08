@@ -38,19 +38,20 @@ sequenceDiagram
 From a spoke chain, you deposit UTY into the yUTY vault. The call routes through the spoke `VaultInterface`, over LayerZero to the hub composer, into the vault, and the resulting yUTY shares bridge back to your address on the spoke.
 
 ```mermaid
-%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%
-flowchart LR
-  subgraph Spoke["Spoke chain"]
-    UserSpoke[User] --> VI[VaultInterface]
-    VI --> OFT[UTY OFT]
-  end
-  subgraph Hub["Hub (Base)"]
-    Composer --> yUTYVault[yUTY vault]
-    yUTYVault --> Adapter[yUTY ShareOFTAdapter]
-  end
-  OFT -- lz --> Composer
-  Adapter -- lz --> yUTYSpoke[yUTY OFT]
-  yUTYSpoke --> UserSpoke
+sequenceDiagram
+  participant User as User (Spoke)
+  participant VI as VaultInterface (Spoke)
+  participant OFT as UTY OFT (Spoke)
+  participant Composer as Composer (Hub)
+  participant Vault as yUTY vault (Hub)
+  participant Adapter as yUTY ShareOFTAdapter (Hub)
+
+  User->>VI: deposit(UTY)
+  VI->>OFT: forward (minus flat fee)
+  OFT->>Composer: lz message
+  Composer->>Vault: deposit on user's behalf
+  Vault->>Adapter: mint and lock yUTY shares
+  Adapter-->>User: lz return (yUTY OFT minted on spoke)
 ```
 
 <Steps>
@@ -86,9 +87,9 @@ flowchart TB
   Wait --> Done
 ```
 
-<Warning>
-  **Instant path falls back to async, never reverts.** When the vault's on-chain USDC buffer lacks enough unencumbered liquidity to satisfy an instant redemption (i.e., `balance - pendingWithdrawals < assets`), the request falls back into the async path instead of reverting. The vault emits an `InstantRedemptionFallback` event so off-chain tooling can distinguish fallback-routed requests from natively-async requests.
-</Warning>
+<Note>
+  **Instant path falls back to async, never reverts.** When the vault's on-chain USDC buffer lacks enough unencumbered liquidity to satisfy an instant redemption, the request falls back into the async path instead of reverting. The vault emits an `InstantRedemptionFallback` event so off-chain tooling can distinguish fallback-routed requests from natively-async requests.
+</Note>
 
 ## yUTY async redemption
 
@@ -124,33 +125,33 @@ From a spoke chain, requesting a yUTY redemption is a two-phase flow: day 0 send
 The request phase looks like this:
 
 ```mermaid
-%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%
-flowchart LR
-  subgraph Spoke["Spoke chain"]
-    UserSpoke[User] --> VI[VaultInterface]
-  end
-  subgraph Hub["Hub (Base)"]
-    Composer --> Vault[yUTY vault]
-    Vault --> Req[WithdrawalRequest]
-  end
-  VI -- lz --> Composer
+sequenceDiagram
+  participant User as User (Spoke)
+  participant VI as VaultInterface (Spoke)
+  participant Composer as Composer (Hub)
+  participant Vault as yUTY vault (Hub)
+
+  User->>VI: requestRedeem(yUTY)
+  VI->>Composer: lz message
+  Composer->>Vault: requestRedeem on user's behalf
+  Vault->>Vault: burn shares, lock rate, create WithdrawalRequest
+  Note over User,Vault: No response — request is pending until day 7+
 ```
 
 After the 7-day bonding period, the claim phase routes back through the spoke interface and composer:
 
 ```mermaid
-%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%
-flowchart LR
-  subgraph SpokeClaim["Spoke chain"]
-    UserClaim[User] --> VIClaim[VaultInterface]
-    UTYSpoke[UTY OFT] --> UserClaim
-  end
-  subgraph HubClaim["Hub (Base)"]
-    ComposerClaim[Composer] --> VaultClaim[yUTY vault]
-    VaultClaim --> Assets[UTY]
-  end
-  VIClaim -- lz --> ComposerClaim
-  Assets -- lz --> UTYSpoke
+sequenceDiagram
+  participant User as User (Spoke)
+  participant VI as VaultInterface (Spoke)
+  participant Composer as Composer (Hub)
+  participant Vault as yUTY vault (Hub)
+
+  User->>VI: redeem()
+  VI->>VI: check pending-claims counter, decrement
+  VI->>Composer: lz message
+  Composer->>Vault: redeem as operator (COMPOSER_ROLE)
+  Vault-->>User: lz return (UTY OFT minted on spoke)
 ```
 
 The composer holds the `COMPOSER_ROLE` on the vault, which allows it to act as an operator for any user's claim. The spoke `VaultInterface` maintains a per-user pending-claims counter that prevents double-spending of claim credits.

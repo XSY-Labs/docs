@@ -3,8 +3,8 @@
   "theme": "mint",
   "name": "YieldPoint",
   "colors": {
-    "primary": "#00ff00",
-    "light": "#00ff00",
+    "primary": "#00e606",
+    "light": "#00e606",
     "dark": "#008b07"
   },
   "background": {
@@ -25,23 +25,6 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
-        "groups": [
-          {
-            "group": "Getting started",
-            "pages": [
-              "index"
-            ]
-          },
-          {
-            "group": "Reference",
-            "pages": [
-              "guides/deployed-addresses"
-            ]
-          }
-        ]
-      },
-      {
         "tab": "Protocol",
         "groups": [
           {
@@ -61,6 +44,17 @@
               "protocol/security",
               "protocol/sdk-integration",
               "protocol/partner-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "User guides",
+            "pages": [
+              "guides/coming-soon"
             ]
           }
         ]

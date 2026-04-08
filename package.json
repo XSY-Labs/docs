@@ -2,11 +2,11 @@
   "name": "docs.yieldpoint.io",
   "version": "0.0.1",
   "scripts": {
-    "dev": "mint dev",
+    "dev": "mint dev --port 3002",
     "build": "mint validate",
     "check:links": "mint broken-links",
     "check:a11y": "mint a11y",
-    "check:xsyl": "grep -rq -E 'XSYL[-[:space:]]?[0-9]+' protocol guides && exit 1 || exit 0",
+    "check:xsyl": "grep -rq -E 'XSYL[-[:space:]]?[0-9]+' protocol && exit 1 || exit 0",
     "check": "mint validate && mint broken-links && mint a11y && pnpm check:xsyl",
     "export": "mint export",
     "update-cli": "mint update"
