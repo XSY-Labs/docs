@@ -22,6 +22,23 @@
   },
   "favicon": "/favicon.svg",
   "logo": "/logo.svg",
+  "redirects": [
+    {
+      "source": "/protocol/partner-integration",
+      "destination": "/protocol/integration/overview",
+      "permanent": true
+    },
+    {
+      "source": "/protocol/sdk-integration",
+      "destination": "/protocol/integration/overview",
+      "permanent": true
+    },
+    {
+      "source": "/protocol/cross-chain",
+      "destination": "/protocol/integration/bridge-operations",
+      "permanent": true
+    }
+  ],
   "navigation": {
     "tabs": [
       {
@@ -38,12 +55,19 @@
             ]
           },
           {
-            "group": "Coming soon",
+            "group": "Integration",
             "pages": [
-              "protocol/cross-chain",
-              "protocol/security",
-              "protocol/sdk-integration",
-              "protocol/partner-integration"
+              "protocol/integration/overview",
+              "protocol/integration/base-operations",
+              "protocol/integration/bridge-operations",
+              "protocol/integration/spoke-chain-operations",
+              "protocol/integration/gotchas"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "protocol/security"
             ]
           }
         ]
