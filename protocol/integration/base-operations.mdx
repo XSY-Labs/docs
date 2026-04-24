@@ -1,9 +1,184 @@
 ---
 title: "Base operations"
-description: "Deposit, withdraw, and claim flows that run directly on Base. UTY mint and redeem are Base-only."
-tag: "Coming soon"
+description: "Deposit, withdraw, and claim flows that run directly on Base. UTY vault mint and redeem are Base-only; the yUTY vault is reachable either directly here or via the spoke cross-chain path."
 ---
 
+Base is the hub. All vault state lives here: shares, withdrawal requests, bonding timers, exchange rates. This page covers the flows an integrator on Base touches directly. For cross-chain flows that originate on Avalanche or Katana, see [Spoke chain operations](/protocol/integration/spoke-chain-operations).
+
+## Upfront notes
+
+- UTY vault mint (USDC → UTY) and redeem (UTY → USDC) run only on Base. The underlying USDC custody lives here; there is no cross-chain route to USDC. To exit UTY from a spoke, bridge UTY to Base first (see [Bridge operations](/protocol/integration/bridge-operations)), then redeem.
+- Every deposit and redemption request requires a prior ERC-20 `approve` on the underlying token granting the vault allowance.
+- Bonding periods are configurable vault state, not protocol constants. Call `getBondingPeriod()` on each vault as the authoritative source; at the time of writing, yUTY returns `0` (claims available the same block as the request) and UTY returns `7 days`. Integrators building bonding-aware logic should read the function, not hard-code the value.
+
+## Deposit USDC into the UTY vault
+
+UTY is USDC-backed at a strict 1:1 peg. You deposit USDC; the vault mints UTY 1:1; USDC is swept to the custodian wallet by the vault's extension logic.
+
+<Steps>
+  <Step title="Approve USDC">
+    `USDC.approve(UTY_VAULT, amount)` on Base.
+  </Step>
+  <Step title="Deposit">
+    `UTY.deposit(assets, receiver)` — `assets` is the USDC amount; `receiver` is the address that receives the minted UTY.
+  </Step>
+</Steps>
+
 <Note>
-  This page is being authored. Full content lands with the partner integration guide rollout.
+  **Common failure.** If the deposit amount underflows the vault's internal accounting, the call reverts with `FeeExceedsAmount(fee, amount)`. See [Gotchas](/protocol/integration/gotchas#feeexceedsamount-on-deposit-or-redeem-request).
 </Note>
+
+## Deposit UTY into the yUTY vault
+
+yUTY is an ERC-4626-style yield-bearing vault over UTY. The exchange rate is not 1:1 — the mainnet yUTY vault has received donations, so `totalAssets() != totalSupply()`. Use `convertToAssets(shares)` and `convertToShares(assets)` to convert accurately; don't assume a 1:1 relationship.
+
+<Steps>
+  <Step title="Approve UTY">
+    `UTY.approve(YUTY_VAULT, amount)` on Base.
+  </Step>
+  <Step title="Deposit">
+    `yUTY.deposit(assets, receiver)` — `assets` is the UTY amount; `receiver` receives the yUTY shares.
+  </Step>
+</Steps>
+
+## Withdraw from yUTY
+
+yUTY uses the ERC-7540 async request-and-claim pattern. The bonding period is currently `0`, so the claim is available in the same block as the request — but the call sequence is still two steps.
+
+<Steps>
+  <Step title="Request">
+    `yUTY.requestRedeem(shares, controller, owner)` — burns `shares`, creates a `WithdrawalRequest`, and returns a `requestId`. `controller` is the address authorized to claim; `owner` must be `msg.sender` or an approved operator.
+  </Step>
+  <Step title="Claim (same block, since bondingPeriod == 0)">
+    `yUTY.redeemById(requestId, receiver)` — transfers the underlying UTY to `receiver`. Call this in the next transaction once the request confirms, or in the same transaction if your integration batches both calls.
+  </Step>
+</Steps>
+
+<Note>
+  **Common failure.** If `msg.sender` isn't the `controller` and isn't approved via `setOperator` on the hub, the claim reverts with `InvalidRequest()` — an overloaded error that also surfaces when the request doesn't exist or was already claimed. See [Gotchas](/protocol/integration/gotchas#controller-mismatch-invalidrequest-vs-inputmustbesender) for the debugging recipe.
+</Note>
+
+## Withdraw from UTY
+
+UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bonding period is 7 days. The spoke doesn't gate the claim client-side — if you call `redeemById` early, the hub rejects with `ERC4626ExceededMaxRedeem`. Check `request.unlockTime` against `block.timestamp` before claiming.
+
+<Steps>
+  <Step title="Approve UTY">
+    `UTY.approve(UTY_VAULT, amount)` on Base (required even for redemption because the vault transfers shares internally).
+  </Step>
+  <Step title="Request">
+    `UTY.requestRedeem(shares, controller, owner)` — burns UTY shares, creates a `WithdrawalRequest` with `unlockTime = block.timestamp + getBondingPeriod()`.
+  </Step>
+  <Step title="Wait for bonding">
+    7 days at current configuration. Read `getBondingPeriod()` for the authoritative value.
+  </Step>
+  <Step title="Claim">
+    `UTY.redeemById(requestId, receiver)` — transfers USDC to `receiver`.
+  </Step>
+</Steps>
+
+<Note>
+  **Common failure.** Calling `redeemById` before `unlockTime` reverts with `ERC4626ExceededMaxRedeem` (the hub's `maxRedeem(controller)` returns 0 during bonding). See [Gotchas](/protocol/integration/gotchas#erc4626exceededmaxredeem-on-premature-claim-uty-only).
+</Note>
+
+## Function reference
+
+<Tip>
+  `previewRedeem()` and `previewWithdraw()` are ERC-4626-native and revert with `ERC7540NotSupported` on these async vaults. Use `previewRequestRedeem()` and `previewRequestWithdraw()` for expected-output preview.
+</Tip>
+
+### UTY hub vault
+
+| Function | Purpose | Who can call it | Returns |
+|---|---|---|---|
+| `deposit(assets, receiver)` | Mint UTY at 1:1 to `receiver` | Anyone (after USDC `approve`) | `uint256 shares` |
+| `requestRedeem(shares, controller, owner)` | Open a UTY → USDC redemption request | `owner` (or operator) | `uint256 requestId` |
+| `redeemById(requestId, receiver)` | Claim a settled redemption | `controller` of the request (or operator) | `uint256 assets` |
+| `previewRequestRedeem(shares)` | Expected USDC output for a given share burn | Anyone (view) | `uint256 assets` |
+| `getBondingPeriod()` | Current bonding period in seconds | Anyone (view) | `uint256` |
+| `getWithdrawalRequests(controller, offset, limit)` | Paginated list of a controller's pending requests | Anyone (view) | `WithdrawalRequest[]` |
+| `claimableRedeemRequest(requestId, controller)` | Claimable shares for a specific request | Anyone (view) | `uint256 shares` |
+| `convertToAssets(shares)` / `convertToShares(assets)` | Exchange-rate conversions | Anyone (view) | `uint256` |
+| `totalAssets()` / `totalSupply()` | Vault state | Anyone (view) | `uint256` |
+| `maxRedeem(controller)` | Maximum claimable shares right now | Anyone (view) | `uint256` |
+
+### yUTY hub vault
+
+| Function | Purpose | Who can call it | Returns |
+|---|---|---|---|
+| `deposit(assets, receiver)` | Mint yUTY shares from UTY (ERC-4626) | Anyone (after UTY `approve`) | `uint256 shares` |
+| `requestRedeem(shares, controller, owner)` | Open a yUTY → UTY redemption request | `owner` (or operator) | `uint256 requestId` |
+| `redeemById(requestId, receiver)` | Claim a settled redemption | `controller` (or operator) | `uint256 assets` |
+| `previewRequestRedeem(shares)` | Expected UTY output for a given share burn | Anyone (view) | `uint256 assets` |
+| `getBondingPeriod()` | Current bonding period in seconds (currently `0`) | Anyone (view) | `uint256` |
+| `getWithdrawalRequests(controller, offset, limit)` | Paginated list of pending requests | Anyone (view) | `WithdrawalRequest[]` |
+| `setOperator(operator, approved)` | Delegate claim authority over your own requests | Anyone — delegates `msg.sender`'s own requests only | `bool` |
+| `isOperator(controller, operator)` | Check operator approval | Anyone (view) | `bool` |
+
+### The `WithdrawalRequest` struct
+
+```solidity
+struct WithdrawalRequest {
+    uint256 requestId;
+    uint256 assets;
+    uint256 shares;
+    uint256 requestTime;
+    uint256 unlockTime;
+    address controller;
+}
+```
+
+Note what's **not** in this struct: there's no origin-chain field. A request made from an Avalanche spoke and a request made directly on Base are indistinguishable in hub state. See [Gotchas](/protocol/integration/gotchas#multi-spoke-origin-tracking) for the implications.
+
+## Event reference
+
+This section is the canonical home for the cross-chain event correlation recipe. The [Bridge operations](/protocol/integration/bridge-operations) and [Spoke chain operations](/protocol/integration/spoke-chain-operations) pages link here rather than re-derive it.
+
+### Hub vault (`UTYAsyncVaultV1`, on Base)
+
+| Event | When it fires | Key fields |
+|---|---|---|
+| `Deposit(sender, owner, assets, shares)` | On `deposit()` | Standard ERC-4626 |
+| `Withdraw(sender, receiver, owner, assets, shares)` | On `redeemById()` settlement | Standard ERC-4626 |
+| `RedeemRequest(controller, owner, requestId, sender, assets)` | On `requestRedeem()` | `requestId`, `controller` |
+| `RequestClosed(requestId, controller, receiver, assets)` | On `redeemById()` | Pairs with `Withdraw` |
+| `Donation(from, assets)` | On `donate()` (yUTY only; UTY `donate()` reverts) | Increases yUTY share price |
+
+### Hub composer (`UTYVaultComposer`, on Base)
+
+| Event | When it fires | Key fields |
+|---|---|---|
+| `RedeemRequested(...)` | On spoke-originated redemption requests after `lzCompose` | OFT message `guid` |
+| `GasTankDebited(guid, operationType, remainingBalance)` | Each outbound LayerZero message from the hub to a spoke | `guid` (the correlation key) |
+| `GasTankFunded(remainingBalance)` | Native token sent to the Composer | — |
+| `RefundPending(id, token, amount, receiver)` | A cross-chain action couldn't complete; retriable | `id` for `retryRefund(id)` |
+| `RefundCompleted(id)` | Refund retry succeeded | — |
+
+### Spoke `VaultInterface` (`UTYVaultInterface`, on each spoke — included here for correlation)
+
+The spoke emits no per-request event. Partner indexers watching for the on-spoke handle on a cross-chain request use `GasTankDebited`'s `guid` field as the correlation key.
+
+| Event | When it fires |
+|---|---|
+| `FeeCollected(token, amount)` | Flat fee taken on deposit or redeem request |
+| `FeesWithdrawn(token, recipient, amount)` | Operations sweeps accumulated fees |
+| `FlatFeeUpdated(feeType, oldValue, newValue)` | Fee parameter change (timelocked) |
+| `GasTankFunded(remainingBalance)` | Native token sent to the spoke interface |
+| `GasTankDebited(guid, operationType, remainingBalance)` | Each outbound LayerZero message from the spoke to the hub |
+| `GasTokensRecovered(to, amount, remainingBalance)` | Operations withdraws excess native from the gas tank |
+
+### Correlation recipe
+
+For a cross-chain flow initiated on a spoke, match the spoke's `GasTankDebited.guid` to the corresponding hub event:
+
+- **Withdrawal request (spoke → hub):** spoke `GasTankDebited.guid` → hub vault `RedeemRequest` (the `guid` appears in the hub composer's `RedeemRequested` event, which is emitted immediately before the vault's `RedeemRequest`).
+- **Deposit return-hop (hub → spoke):** watch the hub composer's `GasTankDebited.guid` as the signal that the deposit's return message has been paid for by the protocol's hub gas tank.
+- **Claim return-hop (hub → spoke):** watch the spoke `VaultInterface`'s `GasTankDebited.guid` for the claim-phase return trip.
+
+If the hub-side event never arrives after the typical LayerZero latency window (under a minute in practice, with no SLA), check LayerZero Scan at `https://layerzeroscan.com/tx/<txhash>` — the message may be queued pending a gas-tank refill. See [Gotchas: `InsufficientFunds`](/protocol/integration/gotchas#insufficientfunds-from-gas-tank-depletion).
+
+## Why `donate()` reverts on UTY but works on yUTY
+
+<Info>
+  The UTY vault overrides `donate()` to revert. UTY maintains a strict 1:1 peg with USDC — a donation would inflate the share price and break the peg. The yUTY vault allows `donate()`; that's the mechanism by which yield is distributed to yUTY holders (the per-share price increases).
+</Info>

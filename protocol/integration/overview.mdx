@@ -1,9 +1,34 @@
 ---
-title: "Overview"
-description: "Start here: how YieldPoint's hub-and-spoke architecture shapes integration, and where to go for the flow you need."
-tag: "Coming soon"
+title: "Integration overview"
+description: "How YieldPoint's hub-and-spoke architecture shapes integration, plus a map of where to go for the flow you need."
 ---
 
+YieldPoint is a hub-and-spoke protocol. Base is the hub: all vault state — shares, withdrawal requests, bonding timers, exchange rates — lives there. Avalanche and Katana are spokes. On spokes you interact with `VaultInterface`, a smart contract that implements the ERC-7540 vault signatures and routes deposit and redeem calls cross-chain to the hub on Base via LayerZero.
+
+## Where do I go?
+
+| You want to… | Read… |
+|---|---|
+| Deposit USDC for UTY, or UTY for yUTY, from Base | [Base operations](/protocol/integration/base-operations) |
+| Integrate a gauge, wrapper, or aggregator on a spoke chain | [Spoke chain operations](/protocol/integration/spoke-chain-operations) |
+| Verify the DVN configuration, understand the cross-chain trust model, or bridge tokens between chains | [Bridge operations](/protocol/integration/bridge-operations) |
+| Debug a revert, trace an error, or check a known limitation | [Gotchas and known limits](/protocol/integration/gotchas) |
+
+## Contract surface per chain
+
+| Chain | Role | What lives here |
+|---|---|---|
+| Base | Hub | UTY vault, yUTY vault, hub `UTYVaultComposer`, `ShareOFTAdapter` lockboxes for UTY and yUTY |
+| Avalanche, Katana | Spoke | UTY OFT, yUTY OFT, `UTYVaultInterface` (one per spoke, distinct addresses) |
+
+Deployed addresses for every contract above are on the [Contracts](/protocol/architecture/contracts) page. Don't hard-code addresses — link to that page and read from it.
+
+## Why the spoke interface looks standard
+
 <Note>
-  This page is being authored. Full content lands with the partner integration guide rollout.
+  The spoke `VaultInterface` matches the ERC-7540 function signatures exactly. `deposit(assets, receiver, controller)` and `requestRedeem(shares, controller, owner)` on a spoke have the same shape as on the hub vault, so partner integrations that target ERC-7540 compile against the spoke without cross-chain-specific code paths. The protocol sponsors return-hop LayerZero fees from gas tanks on the spoke `VaultInterface` and the hub `UTYVaultComposer` — users pay only the first-hop native fee. See [Bridge operations](/protocol/integration/bridge-operations) for the gas sponsorship model.
 </Note>
+
+<Warning>
+  **Planning a gauge or multi-chain aggregator?** If you intend to aggregate redemptions across multiple spoke chains for the same controller address, read [Gotchas and known limits](/protocol/integration/gotchas) before designing your controller model. Concurrent pending withdrawal requests across multiple spokes for one controller is **not supported** and produces failure modes the guide does not work around.
+</Warning>

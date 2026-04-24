@@ -1,9 +1,152 @@
 ---
 title: "Gotchas and known limits"
-description: "Partner integration pitfalls: controller parameter, InputMustBeSender vs InvalidRequest, multi-spoke limits, and common revert signatures."
-tag: "Coming soon"
+description: "Partner integration pitfalls and their fixes: controller parameter, InputMustBeSender vs InvalidRequest, multi-spoke origin tracking, and common revert signatures."
 ---
 
 <Note>
-  This page is being authored. Full content lands with the partner integration guide rollout.
+  Terms like `controller`, `VaultInterface`, and the ERC-7540 async request/claim pattern are defined in [Overview](/protocol/integration/overview) and [Base operations](/protocol/integration/base-operations). Start there if anything below reads as unfamiliar.
 </Note>
+
+This page is organized by the failure you're debugging. Each entry names the error, the likely cause, and the fix. The entries use three presentation styles:
+
+- **Prose** when the failure applies identically on both hub and spoke (e.g., exchange-rate drift, preview reverts).
+- **Chain label in the heading** when the failure only fires on one chain (e.g., `NoPendingClaim` is spoke-only).
+- **Tabs for hub vs spoke** when the same semantic failure surfaces as a different error depending on where you call it.
+
+## Controller parameter
+
+`controller` in `requestRedeem(shares, controller, owner)` is the address authorized to claim the resulting withdrawal request. It is the most important parameter for cross-chain integrators to get right.
+
+**Two patterns:**
+
+- **Pattern 1 — contract is controller.** Works on the hub vault only. The contract can call `redeemById` on the hub vault directly to claim. **Does not work on a spoke** — spoke `redeem` enforces `msg.sender == controller` with no operator-delegation path, and a contract that lives on a spoke cannot directly call the hub vault to recover.
+- **Pattern 2 — user EOA is controller.** Works on both hub and spoke. The user calls `redeem` or `redeemById` directly. This is the correct pattern for any cross-chain integration where the user should be able to claim from a spoke.
+
+<Warning>
+  **If your contract needs users to claim from a spoke, use Pattern 2.** Passing a contract address as `controller` on a spoke `requestRedeem` permanently prevents that contract from claiming from the spoke, and no `setOperator` delegation can rescue a Pattern-1-on-spoke integration (see [Multi-spoke origin tracking](#multi-spoke-origin-tracking) for the details).
+</Warning>
+
+## Controller mismatch: `InvalidRequest` vs `InputMustBeSender`
+
+Same semantic failure ("the caller isn't authorized to claim this request"), different error surface depending on where you called `redeem` — this is a chain-variant failure.
+
+<Tabs>
+  <Tab title="Hub vault (Base)">
+    **Error:** `InvalidRequest()` — *overloaded*. The hub vault uses this single error for three distinct failures:
+    1. The `requestId` doesn't exist.
+    2. The request was already claimed (the vault zeros `unlockTime` on claim).
+    3. The caller is not the `controller` and not an approved operator.
+
+    **Debugging recipe:**
+    1. Recall that `controller` is the address authorized to claim.
+    2. Call `getWithdrawalRequest(requestId)`. If *this* call also reverts with `InvalidRequest()`, the request doesn't exist or was already claimed.
+    3. If `getWithdrawalRequest` returns a `WithdrawalRequest` struct, compare `req.controller` to the caller you were using for `redeemById`.
+    4. If they don't match, check operator approval with `isOperator(req.controller, msg.sender)`. An approved operator can also claim (see [`setOperator` semantics](#setoperator-semantics) below).
+  </Tab>
+  <Tab title="Spoke `VaultInterface`">
+    **Error:** `InputMustBeSender(address input)` — named argument, different selector, different semantics. The spoke `VaultInterface.redeem(shares, receiver, controller)` enforces `_checkInputIsSender(controller)` — `controller` must equal `msg.sender`.
+
+    **There is no operator-delegation path on spokes.** The spoke `VaultInterface` is a cross-chain proxy; it cannot validate operator approvals that live on the hub without a synchronous hub-state read, which it does not perform.
+
+    **Debugging recipe:**
+    1. The `input` field in the error is the address you passed as `controller`.
+    2. If it isn't equal to `msg.sender`, that's the bug. Either call from the `controller` EOA directly (Pattern 2), or bridge the hub recovery path — call `redeemById` on the hub vault on Base using the `controller` account.
+    3. If your integration is a contract that cannot make hub calls, you're in the Pattern-1-on-spoke trap; see the controller-safety warning above.
+  </Tab>
+</Tabs>
+
+## `setOperator` semantics
+
+`setOperator(operator, approved)` is an ERC-7540 standard function, and it's **permissionless** — think of it as `ERC-20.approve()` but for vault operations.
+
+- `setOperator(operator, approved)` writes `isOperator[msg.sender][operator] = approved`. It only delegates access to **the caller's own** withdrawal requests. There's no admin role or front-running concern — a third party calling `setOperator` only grants access to *their own* requests, not yours.
+- The hub vault additionally reverts if `operator == msg.sender` (`OperationNotAllowed`). A contract cannot self-delegate via `setOperator`; this closes a self-operator trick that would otherwise let Pattern-1-on-spoke contracts rescue themselves.
+- Operator delegation only works on the hub vault. Spokes do not honor it (see the `InputMustBeSender` tab above).
+
+## Multi-spoke origin tracking
+
+<Info>
+  **Scope declaration.** YieldPoint's integration guide does not support the multi-spoke-concurrent-request pattern. If your controller has pending withdrawal requests on more than one spoke at the same time, you are outside the supported workflow. This section describes the failure modes for readers who land here from a failing integration, plus a detection recipe and — where possible — a recovery path.
+</Info>
+
+### Why it breaks
+
+The hub vault processes withdrawal requests in **chain-agnostic FIFO** order. The `WithdrawalRequest` struct has no `sourceEid` or origin-chain field — a request issued from Avalanche and a request issued from Katana are indistinguishable in hub storage. Each spoke tracks its own per-controller `pendingClaims` counter, which increments on `requestRedeem` and decrements on `redeem`, but the counters don't sync cross-chain. Three failure modes arise from this mismatch:
+
+- **Cross-spoke sweeping.** A `redeem` call from spoke A can settle requests originated from spoke B, because the hub processes FIFO and doesn't know the origin.
+- **Partial stranding.** If a spoke claim consumes its ticket for less than the full hub-side request amount, the remaining shares are only claimable directly from the hub, not from either spoke.
+- **Orphaned tickets.** After cross-spoke sweeping, the "source" spoke still has `pendingClaims > 0` (its counter wasn't decremented because the hub settled into a different spoke's claim). A follow-up `redeem` on the source spoke consumes the ticket on the spoke side (counter decrements, LZ fee debited) but the hub rejects with `ERC4626ExceededMaxRedeem` (or similar) because the matching hub state has already been settled. The ticket is burned, the gas tank is debited, and nothing arrives.
+
+### Pre-claim detection recipe
+
+Before calling `redeem` on a spoke, confirm no concurrent cross-spoke claim is in flight:
+
+1. Call `getWithdrawalRequests(controller, offset, limit)` on the hub vault on Base — note the three-arg signature. See the [Base operations function reference](/protocol/integration/base-operations#function-reference) for the full return shape.
+2. Compare the hub array length to the sum of your own per-spoke `pendingClaims(controller)` counts across all spokes your integration tracks.
+3. If the hub count exceeds the sum of your per-spoke counts, a concurrent request is in flight from a chain you're not tracking. Either wait for the in-flight round trip to settle, or claim directly on the hub with `redeemById(requestId, receiver)`.
+
+**Origin chain is not recoverable from hub state.** You cannot ask the hub "which spoke did this request come from" — that data isn't stored. The count-mismatch check is the best you can do without your own per-spoke ledger.
+
+### Recovery preconditions
+
+If you're already stranded (a spoke ticket is burned, a hub request is stuck), recovery depends on which controller pattern you chose:
+
+- **Pattern 2 (user EOA as controller):** The user calls `redeemById(requestId, receiver)` on the hub vault on Base directly. This requires the user to transact on Base — hold ETH for gas and switch chains in their wallet. It works but the UX is "leave the spoke."
+- **Pattern 1 (contract as controller):** If the contract lives on Base, call `redeemById` directly. If the contract lives on a spoke and cannot call Base, **there is no clean recovery path.** The contract cannot self-delegate (`setOperator` reverts on self), and the user EOA cannot claim either (they're not the controller). Partners who reach this state should escalate to YieldPoint integration support via Discord `#integrations`.
+- **Design-time fix:** use Pattern 2 from the start. If you're reading this because you're stuck, pattern choice is the root cause — future integrations of the same flow should adopt Pattern 2.
+
+## `FeeExceedsAmount` on deposit or redeem request
+
+**Error:** `FeeExceedsAmount(uint256 fee, uint256 amount)`. Source contract: `UTYVaultInterface` (on each spoke) for the three-arg `deposit(assets, receiver, controller)` and `requestRedeem(shares, controller, owner)` calls. Also fires on the hub UTY vault's own deposit path for the same underflow condition.
+
+The flat deposit and redeem fees are deducted from the amount before bridging. If the amount is less than or equal to the fee, the call reverts — the vault won't accept a zero-value or negative-value post-fee amount.
+
+**Fix.** Before calling, read the current fee and require strict inequality:
+
+- For `requestRedeem(shares, ...)`: require `shares > redeemFlatFee()`.
+- For `deposit(assets, ...)`: require `assets > depositFlatFee()`.
+
+The `fee` and `amount` fields on the error tell you exactly how far under the threshold you were — useful for UI that wants to display "minimum redeemable" hints.
+
+## `NoPendingClaim()` on the spoke
+
+The spoke `VaultInterface.redeem` requires `pendingClaims[controller] > 0` before it fires the cross-chain message. Without a prior `requestRedeem` on the **same spoke** from the **same controller**, the call reverts with `NoPendingClaim()`.
+
+The counter is per-controller and per-spoke. A `requestRedeem` on Avalanche does not create a claim ticket on Katana. If you request on Avalanche and try to claim on Katana, you get `NoPendingClaim()` — which is also the signal that the design is multi-spoke and you should revisit the scope declaration above.
+
+## `ERC4626ExceededMaxRedeem` on premature claim (UTY only)
+
+Applies to the UTY vault, which has a non-zero bonding period (7 days at current config). The spoke does not gate the claim client-side — it forwards the cross-chain message, and the hub rejects because `maxRedeem(controller)` returns 0 during bonding. You see `ERC4626ExceededMaxRedeem` (or a similar standard ERC-4626 revert) after the LZ round trip.
+
+**Fix:** check `request.unlockTime` against `block.timestamp` before calling `redeem`. For yUTY (`bondingPeriod == 0`), this check is trivially satisfied in the next block.
+
+## Preview functions revert on async vaults
+
+`previewRedeem()` and `previewWithdraw()` are ERC-4626-native and don't know about ERC-7540's request-and-claim pattern. On the hub vaults they revert with `ERC7540NotSupported`. Use the async equivalents instead:
+
+| Don't call | Call this instead |
+|---|---|
+| `previewRedeem(shares)` | `previewRequestRedeem(shares)` |
+| `previewWithdraw(assets)` | `previewRequestWithdraw(assets)` |
+
+Both return the expected paired value (`assets` for shares, or `shares` for assets) at the current exchange rate.
+
+## Exchange-rate drift on yUTY
+
+The mainnet yUTY vault has received donations (that's how yield is distributed — `donate()` increases the per-share value), so `totalAssets() != totalSupply()` and a yUTY share is worth more than one UTY at any given time. Use `convertToAssets(shares)` and `convertToShares(assets)` for accurate conversions; don't assume 1:1.
+
+UTY does not have this drift because the UTY vault overrides `donate()` to revert (preserving the 1:1 peg with USDC).
+
+## `InsufficientFunds` from gas-tank depletion
+
+**Error:** `InsufficientFunds(uint256 availableFunds, uint256 requiredFunds)`. Source contracts: `UTYVaultInterface` (on each spoke, for outbound spoke → hub messages) and `UTYVaultComposer` (on the hub, for return-hop messages back to a spoke).
+
+Under normal operation, YieldPoint ops keeps the gas tanks funded. Depletion is rare but possible — if it happens, this is how to recognize and recover:
+
+**Observable signal.** A spoke-side `GasTankDebited` event is emitted without the corresponding hub-side event (hub `RedeemRequest` for a withdrawal request, or hub composer `GasTankDebited` for a deposit return-hop) arriving within the typical LayerZero latency window (under a minute). If you see a spoke `GasTankDebited.guid` with no matching hub event after a reasonable wait, suspect gas-tank depletion.
+
+**Funds are safe.** The LayerZero message is queued at the endpoint, not lost. LZ message retries are permissionless — once ops refills the relevant gas tank, anyone can retry the message, and the user need not take any action. No funds are at risk during the depletion window.
+
+**Inspection.** Look up the stuck message at `https://layerzeroscan.com/tx/<txhash>` — LayerZero Scan is the canonical viewer for message status.
+
+**Escalation.** If the message remains unexecuted beyond the typical latency window (say, more than a few minutes), contact the YieldPoint integration team via Discord `#integrations`.
