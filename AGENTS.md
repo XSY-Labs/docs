@@ -86,7 +86,7 @@ to the local `yieldpoint` agent at `.claude/agents/yieldpoint.md` rather
 than writing from this list.
 
 - **UTY** — Unity. USDC-backed stablecoin, pegged 1:1, Base-only mint/redeem
-- **yUTY** — Staked Unity. Yield vault backed by UTY, 7-day unbonding,
+- **yUTY** — Staked Unity. Yield vault backed by UTY, instant redemption,
   cross-chain
 - **Hub chain** — Base. All vault state lives here
 - **Spoke chain** — Avalanche and Katana. Users hold tokens and trigger
@@ -94,7 +94,7 @@ than writing from this list.
 - **Composer** — LayerZero V2 component that handles cross-chain message
   composition
 - **Bonding period** — Time between a withdrawal request and the claim.
-  For yUTY, 7 days
+  For UTY, 7 days. yUTY has no bonding period — claims are instant
 
 ## Content conventions
 

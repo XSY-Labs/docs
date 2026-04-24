@@ -20,7 +20,7 @@ YieldPoint deploys on Base (hub) and two spoke chains (Avalanche and Katana). Co
 |---|---|---|
 | `UTY vault` | `0xBA515304d8153c4b162dC79f867E152DF9c127eb` | ERC-7540 async vault. Deposit USDC to mint UTY 1:1. |
 | `UTY adapter` (`ShareOFTAdapter`) | `0xC6fE7C5010621Ab3CA5F4C018fAd632f78b4D3f1` | Lockbox adapter for cross-chain UTY transfers. |
-| `yUTY vault` | `0xBa515EEd0119aCB7CFE8fAb3ACD6b362f3ed5319` | ERC-7540 async vault for yUTY. 7-day bonding on withdrawals. |
+| `yUTY vault` | `0xBa515EEd0119aCB7CFE8fAb3ACD6b362f3ed5319` | ERC-7540 async vault for yUTY shares. |
 | `yUTY adapter` (`ShareOFTAdapter`) | `0xCfD564bbf4e50A248835aCe8Ca889f73217162d4` | Lockbox adapter for cross-chain yUTY transfers. |
 | `yUTY composer` | `0x2eF787561f3A79371Ee1165B7BeE6dc6ffB09832` | Hub-side cross-chain message handler for yUTY deposits and redemptions from spoke chains. |
 | `USDC` (external) | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | USDC on Base. The underlying asset for UTY. |
@@ -136,8 +136,7 @@ The base vault inherits from seven upgradeable OpenZeppelin and YieldPoint contr
 
 `yUTY` extends `UTYAsyncVaultV1` directly, without the custodian or instant extensions:
 
-- Async-only ERC-7540 vault — no instant redemption
-- 7-day unbonding period for all withdrawals
+- Async ERC-7540 vault without the `UTYAsyncVaultV1Instant` extension
 - 18-decimal shares (no decimals offset; inflation defense via seed deposit)
 
 ## LayerZero contracts
@@ -174,7 +173,7 @@ YieldPoint ships two concrete vault implementations ready for deployment:
 
 | Contract | Description | Extends |
 |---|---|---|
-| `UTY` | Unity stablecoin vault (1:1 USDC peg, custodian sweep, instant redemption) | `UTYAsyncVaultV1`, `UTYAsyncVaultV1Instant`, `UTYAsyncVaultV1Custodian` |
-| `yUTY` | Yield-bearing vault shares for UTY (async-only, no instant redemption) | `UTYAsyncVaultV1` |
+| `UTY` | Unity stablecoin vault (1:1 USDC peg, custodian sweep) | `UTYAsyncVaultV1`, `UTYAsyncVaultV1Instant`, `UTYAsyncVaultV1Custodian` |
+| `yUTY` | Yield-bearing vault shares for UTY (async ERC-7540, no instant extension) | `UTYAsyncVaultV1` |
 
-Both contracts include hardcoded names, symbols, and default configuration (7-day bonding period, unlimited max assets).
+Both contracts hardcode their names and symbols. Bonding period, deposit caps, and other parameters are configured per vault after deployment.

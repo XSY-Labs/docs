@@ -3,7 +3,7 @@ title: "Core flows"
 description: "How deposits, redemptions, and cross-chain operations route through the YieldPoint contracts."
 ---
 
-YieldPoint has five core operation flows: UTY deposit (direct on Base), yUTY deposit from a spoke chain, UTY redemption (with an optional instant path), yUTY async redemption, and cross-chain redemption. This page walks through each one.
+YieldPoint has five core operation flows: UTY deposit (direct on Base), yUTY deposit from a spoke chain, UTY redemption, yUTY redemption, and cross-chain redemption. This page walks through each one.
 
 All cross-chain flows show the spoke column generically as "Spoke chain" — the flow is identical whether the user is on Avalanche or Katana.
 
@@ -70,30 +70,36 @@ sequenceDiagram
   **There is no cross-chain UTY deposit flow.** UTY can only be minted on Base by depositing USDC directly to the UTY vault. Once minted, UTY can be bridged to spoke chains and used to mint yUTY cross-chain via the flow above.
 </Note>
 
-## UTY redemption routing
+## UTY redemption
 
-Redemption has two paths. If the UTY vault has a non-zero instant redemption threshold configured and your redeem amount is below it, the vault attempts an instant redeem from its on-chain USDC buffer. Otherwise (or if the buffer lacks sufficient unencumbered liquidity), the request enters the 7-day async bonding path.
+UTY redemption uses a 7-day async bonding path. You call `requestRedeem` on Base, the vault burns your UTY and creates a `WithdrawalRequest` with `unlockTime = now + 7 days`. Once the bonding period elapses, you call `redeemById(requestId)` to receive USDC from the vault's on-chain buffer.
 
 ```mermaid
-flowchart TB
-  Start([User calls requestRedeem]) --> ThresholdCheck{"Amount &lt; threshold?"}
-  ThresholdCheck -- no --> Async[Async path: 7-day bonding]
-  ThresholdCheck -- yes --> LiquidityCheck{"Buffer has unencumbered liquidity?"}
-  LiquidityCheck -- yes --> Instant[Instant path: burn shares, transfer USDC]
-  LiquidityCheck -- no --> Fallback[InstantRedemptionFallback event]
-  Fallback --> Async
-  Instant --> Done([User receives USDC])
-  Async --> Wait[Wait 7 days, then claim]
-  Wait --> Done
+sequenceDiagram
+  participant User
+  participant Vault as UTY vault
+  participant Req as WithdrawalRequest
+
+  Note over User,Req: Day 0: request
+  User->>Vault: requestRedeem(shares)
+  Vault->>Vault: burn UTY, lock rate
+  Vault->>Req: create request, unlockTime = now + 7d
+
+  Note over User,Req: Wait 7 days
+
+  Note over User,Req: Day 7+: claim
+  User->>Vault: redeemById(requestId)
+  Vault->>Vault: check unlock, transfer USDC
+  Vault->>User: transfer USDC
 ```
 
 <Note>
-  **Instant path falls back to async, never reverts.** When the vault's on-chain USDC buffer lacks enough unencumbered liquidity to satisfy an instant redemption, the request falls back into the async path instead of reverting. The vault emits an `InstantRedemptionFallback` event so off-chain tooling can distinguish fallback-routed requests from natively-async requests.
+  **UTY redemption is Base-only.** To redeem UTY for USDC you need to be on Base. If you hold UTY on a spoke chain, bridge it to Base first, then call `requestRedeem` on the hub vault.
 </Note>
 
-## yUTY async redemption
+## yUTY redemption
 
-yUTY has no instant path — all redemptions go through the 7-day bonding period. On day 0 you lock your shares and a withdrawal request is created; on day 7 or later you claim your assets.
+yUTY redemption is instant on the hub chain. You call `requestRedeem`, the vault burns your shares and creates a `WithdrawalRequest` with no bonding delay. The matching `redeemById(requestId)` call is available in the same block and transfers the underlying UTY to you.
 
 ```mermaid
 sequenceDiagram
@@ -101,26 +107,21 @@ sequenceDiagram
   participant Vault as yUTY vault
   participant Req as WithdrawalRequest
 
-  Note over User,Req: Day 0: request
   User->>Vault: requestRedeem(shares)
   Vault->>Vault: burn shares, lock rate
-  Vault->>Req: create request, unlockTime = now + 7d
-
-  Note over User,Req: Wait 7 days
-
-  Note over User,Req: Day 7+: claim
-  User->>Vault: redeem() or redeemById(requestId)
-  Vault->>Vault: check unlock, transfer assets
+  Vault->>Req: create request, unlockTime = now
+  User->>Vault: redeemById(requestId)
+  Vault->>Vault: transfer assets
   Vault->>User: transfer UTY
 ```
 
 <Note>
-  **7-day bonding period.** The bonding period is fixed at 7 days for the default yUTY vault configuration. Once shares are burned on day 0, the exchange rate is locked — any yield accrual between the request and the claim accrues to remaining shareholders, not to the withdrawing user.
+  **ERC-7540 flow, no bonding delay.** yUTY still follows the ERC-7540 async pattern with separate request and claim calls, so off-chain tooling built against the standard works unchanged. The bonding period is a vault configuration; it's currently set to 0, which makes the claim call available immediately. When shares are burned at request time, the exchange rate is locked — any yield accrual between request and claim accrues to remaining shareholders.
 </Note>
 
 ## Cross-chain redemption
 
-From a spoke chain, requesting a yUTY redemption is a two-phase flow: day 0 sends the request cross-chain to the hub, and day 7+ the user claims from the spoke via a second cross-chain call that uses the composer as a vault operator.
+From a spoke chain, requesting a yUTY redemption is a two-phase flow. The request sends the redemption cross-chain to the hub, where shares are burned. The claim is a separate spoke-originated transaction that instructs the hub composer to settle the withdrawal request and bridge UTY back to the user on the spoke.
 
 The request phase looks like this:
 
@@ -135,10 +136,10 @@ sequenceDiagram
   VI->>Composer: lz message
   Composer->>Vault: requestRedeem on user's behalf
   Vault->>Vault: burn shares, lock rate, create WithdrawalRequest
-  Note over User,Vault: No response — request is pending until day 7+
+  Note over User,Vault: No return message — user watches hub state via indexer or Base RPC
 ```
 
-After the 7-day bonding period, the claim phase routes back through the spoke interface and composer:
+Once the hub-side request confirms (typically 10–60 seconds via LayerZero), the claim phase routes back through the spoke interface and composer:
 
 ```mermaid
 sequenceDiagram
