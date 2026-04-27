@@ -39,6 +39,15 @@
       "permanent": true
     }
   ],
+  "api": {
+    "openapi": "https://api.yieldpoint.io/docs/json",
+    "playground": {
+      "display": "interactive"
+    },
+    "examples": {
+      "languages": ["bash", "javascript", "python"]
+    }
+  },
   "navigation": {
     "tabs": [
       {
@@ -82,6 +91,10 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "API reference",
+        "openapi": "https://api.yieldpoint.io/docs/json"
       }
     ],
     "global": {
