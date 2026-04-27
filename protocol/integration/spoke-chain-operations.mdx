@@ -51,6 +51,17 @@ Partners watching for deposit settlement should subscribe to the hub composer's 
   Passing a contract address as `controller` on a spoke `requestRedeem` call will permanently prevent that contract from claiming on the spoke. Spoke `redeem()` enforces `msg.sender == controller` with no operator-delegation path, and the hub-side recovery primitive `setOperator` cannot save a contract-as-controller integrator (see [Gotchas: multi-spoke origin tracking](/protocol/integration/gotchas#multi-spoke-origin-tracking)). **If your contract needs users to claim from the spoke, pass the user's EOA as `controller` at request time.** This is the single most common partner integration bug.
 </Warning>
 
+## Spoke claim constraints
+
+The spoke `UTYVaultInterface` exposes only one claim function — `redeem(shares, receiver, controller)`. The richer hub claim API is **not available on spokes**:
+
+- **No `withdraw(assets, ...)`** — claims from spokes are share-denominated only. Partners that need to target a specific asset payout amount must claim on the hub, or convert the desired asset amount to shares before calling spoke `redeem`.
+- **No `redeemById(...)`** — spokes cannot target a specific request. The hub composer always invokes the aggregating `redeem(shares, ...)` loop on the vault, so requests are consumed in storage order. Partners doing per-request accounting (gauges, vault-of-vaults) must keep that accounting on the hub and use [`redeemById`](/protocol/integration/base-operations#hub-claim-paths) directly on Base.
+
+Operator delegation is also unavailable on spokes — see the [Controller-safety warning](#controller-safety-warning) above for the recovery story.
+
+UTY has no spoke claim path at all. UTY claims are Base-only regardless of which chain the holder is on; bridge UTY to Base first, then call `redeemById` (or `redeem` / `withdraw`) on the hub vault.
+
 ## Withdraw yUTY from a spoke
 
 yUTY spoke withdrawal is **two user transactions** — the protocol doesn't round-trip a settlement message, so there's no way to combine request and claim into a single tx. Between the two, the user (or their integration) watches hub state for settlement.
@@ -66,7 +77,9 @@ yUTY spoke withdrawal is **two user transactions** — the protocol doesn't roun
     No return message is sent. Partners watch on-hub state via indexer or Base RPC; the correlation recipe lives in the [Base operations event reference](/protocol/integration/base-operations#event-reference) — use the spoke `GasTankDebited.guid` to match the hub `RedeemRequest`.
   </Step>
   <Step title="Claim (tx 2)">
-    `VaultInterface.redeem(shares, receiver, controller)` on the spoke. Enforces `_checkInputIsSender(controller)` — `controller` must equal `msg.sender`; **no operator delegation on spokes**. The claim sends a second cross-chain message; the hub composer calls `redeemById` on the vault using its `COMPOSER_ROLE`; UTY bridges back to the spoke to the `receiver` address. For yUTY the bonding period is `0`, so this tx can run as soon as the hub confirms the request — typically within a minute of tx 1.
+    `VaultInterface.redeem(shares, receiver, controller)` on the spoke. Enforces `_checkInputIsSender(controller)` — `controller` must equal `msg.sender`; **no operator delegation on spokes**. The claim sends a second cross-chain message; the hub composer calls the vault's aggregating `redeem(shares, address(this), controller)` using its `COMPOSER_ROLE`; UTY bridges back to the spoke to the `receiver` address. For yUTY the bonding period is `0`, so this tx can run as soon as the hub confirms the request — typically within a minute of tx 1.
+
+    Each spoke `redeem` call consumes exactly one matured-request slot regardless of share size, so a controller with N matured requests on this spoke needs N spoke `redeem` calls. See [Gotchas: `NoPendingClaim()`](/protocol/integration/gotchas#nopendingclaim-on-the-spoke) for the failure mode if a caller assumes one large `redeem` will drain multiple requests.
   </Step>
 </Steps>
 

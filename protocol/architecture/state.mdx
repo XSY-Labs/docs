@@ -39,3 +39,5 @@ Reading a balance or approving a spender is a local call on whatever chain you'r
 | `requestRedeem` / `redeem` (UTY) | Write | Hub | Base only — no cross-chain UTY redemption. |
 | `requestRedeem` / `redeem` (yUTY) | Write | Hub | Via spoke `VaultInterface` → composer when called from a spoke chain. |
 | `redeemById(requestId, receiver)` | Write | Hub | Direct claim by withdrawal request ID. |
+| `redeem(shares, receiver, controller)` | Write | Hub | Claim across the controller's matured requests in storage order. |
+| `withdraw(assets, receiver, controller)` | Write | Hub | Claim a target asset amount across the controller's matured requests in storage order. |

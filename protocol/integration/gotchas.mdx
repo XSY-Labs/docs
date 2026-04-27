@@ -114,11 +114,19 @@ The spoke `VaultInterface.redeem` requires `pendingClaims[controller] > 0` befor
 
 The counter is per-controller and per-spoke. A `requestRedeem` on Avalanche does not create a claim ticket on Katana. If you request on Avalanche and try to claim on Katana, you get `NoPendingClaim()` — which is also the signal that the design is multi-spoke and you should revisit the scope declaration above.
 
-## `ERC4626ExceededMaxRedeem` on premature claim (UTY only)
+The slot is also **per-request**, not per-share. Each `requestRedeem` adds one slot regardless of share size, and each `redeem` consumes one slot regardless of how many shares are claimed. A controller with three matured requests on the same spoke therefore needs three separate spoke `redeem` calls — calling `redeem(largeShareTotal, ...)` once will consume only the first slot, succeed, and leave the other two requests unclaimed (the second call will succeed too; the fourth will revert with `NoPendingClaim()`). To drain multiple matured requests in a single call, claim on the hub via `redeem` or `withdraw` (see [Hub claim paths](/protocol/integration/base-operations#hub-claim-paths)).
 
-Applies to the UTY vault, which has a non-zero bonding period (7 days at current config). The spoke does not gate the claim client-side — it forwards the cross-chain message, and the hub rejects because `maxRedeem(controller)` returns 0 during bonding. You see `ERC4626ExceededMaxRedeem` (or a similar standard ERC-4626 revert) after the LZ round trip.
+## Premature-claim reverts (UTY only)
 
-**Fix:** check `request.unlockTime` against `block.timestamp` before calling `redeem`. For yUTY (`bondingPeriod == 0`), this check is trivially satisfied in the next block.
+Applies to the UTY vault, which has a non-zero bonding period (7 days at current config). The spoke does not gate the claim client-side — it forwards the cross-chain message, and the hub rejects when the request is not yet matured. The hub revert name depends on which claim path was called:
+
+| Claim path | Premature-claim revert |
+|---|---|
+| `redeemById(requestId, receiver)` | `BondingPeriodNotOver()` |
+| `redeem(shares, receiver, controller)` | `ERC4626ExceededMaxRedeem(controller, shares, maxShares)` (because `maxRedeem(controller)` returns `0` during bonding) |
+| `withdraw(assets, receiver, controller)` | `ERC4626ExceededMaxWithdraw(controller, assets, maxAssets)` (because `maxWithdraw(controller)` returns `0` during bonding) |
+
+**Fix:** check `request.unlockTime` against `block.timestamp` before calling any of the three. For yUTY (`bondingPeriod == 0`), this check is trivially satisfied in the next block.
 
 ## Preview functions revert on async vaults
 

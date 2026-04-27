@@ -50,7 +50,7 @@ yUTY uses the ERC-7540 async request-and-claim pattern. The bonding period is cu
     `yUTY.requestRedeem(shares, controller, owner)` — burns `shares`, creates a `WithdrawalRequest`, and returns a `requestId`. `controller` is the address authorized to claim; `owner` must be `msg.sender` or an approved operator.
   </Step>
   <Step title="Claim (same block, since bondingPeriod == 0)">
-    `yUTY.redeemById(requestId, receiver)` — transfers the underlying UTY to `receiver`. Call this in the next transaction once the request confirms, or in the same transaction if your integration batches both calls.
+    `yUTY.redeemById(requestId, receiver)` — transfers the underlying UTY to `receiver`. Call this in the next transaction once the request confirms, or in the same transaction if your integration batches both calls. To drain multiple matured requests in a single call, see [Hub claim paths](#hub-claim-paths) for the `redeem` and `withdraw` alternatives.
   </Step>
 </Steps>
 
@@ -60,7 +60,7 @@ yUTY uses the ERC-7540 async request-and-claim pattern. The bonding period is cu
 
 ## Withdraw from UTY
 
-UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bonding period is 7 days. The spoke doesn't gate the claim client-side — if you call `redeemById` early, the hub rejects with `ERC4626ExceededMaxRedeem`. Check `request.unlockTime` against `block.timestamp` before claiming.
+UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bonding period is 7 days. The spoke doesn't gate the claim client-side — if you claim before the bonding period elapses, the hub rejects (with a different revert name per claim path; see the Common-failure note below). Check `request.unlockTime` against `block.timestamp` before claiming.
 
 <Steps>
   <Step title="Approve UTY">
@@ -73,13 +73,32 @@ UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bon
     7 days at current configuration. Read `getBondingPeriod()` for the authoritative value.
   </Step>
   <Step title="Claim">
-    `UTY.redeemById(requestId, receiver)` — transfers USDC to `receiver`.
+    `UTY.redeemById(requestId, receiver)` — transfers USDC to `receiver`. To drain multiple matured requests in a single call, see [Hub claim paths](#hub-claim-paths) for the `redeem` and `withdraw` alternatives.
   </Step>
 </Steps>
 
 <Note>
-  **Common failure.** Calling `redeemById` before `unlockTime` reverts with `ERC4626ExceededMaxRedeem` (the hub's `maxRedeem(controller)` returns 0 during bonding). See [Gotchas](/protocol/integration/gotchas#erc4626exceededmaxredeem-on-premature-claim-uty-only).
+  **Common failure.** Premature claim revert names differ per path:
+  - `redeemById` reverts with `BondingPeriodNotOver()`.
+  - `redeem` reverts with `ERC4626ExceededMaxRedeem(controller, shares, maxShares)` because `maxRedeem(controller)` returns `0` during bonding.
+  - `withdraw` reverts with `ERC4626ExceededMaxWithdraw(controller, assets, maxAssets)` because `maxWithdraw(controller)` returns `0` during bonding.
+
+  Check `request.unlockTime` against `block.timestamp` before claiming on any path. See [Gotchas](/protocol/integration/gotchas#premature-claim-reverts-uty-only).
 </Note>
+
+## Hub claim paths
+
+The hub vault exposes three claim functions. All three require the bonding period to have elapsed and apply the same controller-or-operator authorization rules described above. They differ in how they select which request or requests to consume.
+
+| Function | Denomination | Targets | Partial-drain | When to use |
+|---|---|---|---|---|
+| `redeemById(requestId, receiver)` | full request | one specific request by ID | no — closes the entire request | Per-request accounting where the caller tracks individual request IDs |
+| `redeem(shares, receiver, controller)` | shares | consumes the controller's matured requests in storage order until the requested share total is fulfilled | yes — partially consumes the trailing request when the share total runs out mid-request | Aggregate claim across multiple matured requests in a single call, sized in shares |
+| `withdraw(assets, receiver, controller)` | assets | consumes the controller's matured requests in storage order until the requested asset total is fulfilled | yes — partially consumes the trailing request when the asset total runs out mid-request | Aggregate claim across multiple matured requests in a single call, sized in assets |
+
+- `redeem` and `withdraw` skip non-matured requests in the loop, so a single call cleanly handles a queue that mixes matured and bonding requests.
+- All three paths are hub-only. None are exposed on the spoke `UTYVaultInterface` — see [Spoke claim constraints](/protocol/integration/spoke-chain-operations#spoke-claim-constraints).
+- **Partners doing per-request accounting (gauges, vault-of-vaults, anything that tracks individual request IDs) should use `redeemById`.** It is the only path with a stable caller-controlled request identity. Iteration order across multiple matured requests in `redeem` and `withdraw` is implementation-defined and must not be relied on for accounting.
 
 ## Function reference
 
@@ -94,6 +113,8 @@ UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bon
 | `deposit(assets, receiver)` | Mint UTY at 1:1 to `receiver` | Anyone (after USDC `approve`) | `uint256 shares` |
 | `requestRedeem(shares, controller, owner)` | Open a UTY → USDC redemption request | `owner` (or operator) | `uint256 requestId` |
 | `redeemById(requestId, receiver)` | Claim a settled redemption | `controller` of the request (or operator) | `uint256 assets` |
+| `redeem(shares, receiver, controller)` | Claim across the controller's matured requests in storage order | `controller` (or operator) | `uint256 assets` |
+| `withdraw(assets, receiver, controller)` | Claim a target asset amount across the controller's matured requests in storage order | `controller` (or operator) | `uint256 shares` |
 | `previewRequestRedeem(shares)` | Expected USDC output for a given share burn | Anyone (view) | `uint256 assets` |
 | `getBondingPeriod()` | Current bonding period in seconds | Anyone (view) | `uint256` |
 | `getWithdrawalRequests(controller, offset, limit)` | Paginated list of a controller's pending requests | Anyone (view) | `WithdrawalRequest[]` |
@@ -109,6 +130,8 @@ UTY redemption (UTY → USDC) runs through the same ERC-7540 pattern but the bon
 | `deposit(assets, receiver)` | Mint yUTY shares from UTY (ERC-4626) | Anyone (after UTY `approve`) | `uint256 shares` |
 | `requestRedeem(shares, controller, owner)` | Open a yUTY → UTY redemption request | `owner` (or operator) | `uint256 requestId` |
 | `redeemById(requestId, receiver)` | Claim a settled redemption | `controller` (or operator) | `uint256 assets` |
+| `redeem(shares, receiver, controller)` | Claim across the controller's matured requests in storage order | `controller` (or operator) | `uint256 assets` |
+| `withdraw(assets, receiver, controller)` | Claim a target asset amount across the controller's matured requests in storage order | `controller` (or operator) | `uint256 shares` |
 | `previewRequestRedeem(shares)` | Expected UTY output for a given share burn | Anyone (view) | `uint256 assets` |
 | `getBondingPeriod()` | Current bonding period in seconds (currently `0`) | Anyone (view) | `uint256` |
 | `getWithdrawalRequests(controller, offset, limit)` | Paginated list of pending requests | Anyone (view) | `WithdrawalRequest[]` |
@@ -139,9 +162,9 @@ This section is the canonical home for the cross-chain event correlation recipe.
 | Event | When it fires | Key fields |
 |---|---|---|
 | `Deposit(sender, owner, assets, shares)` | On `deposit()` | Standard ERC-4626 |
-| `Withdraw(sender, receiver, owner, assets, shares)` | On `redeemById()` settlement | Standard ERC-4626 |
+| `Withdraw(sender, receiver, owner, assets, shares)` | On any hub claim (`redeemById`, `redeem`, or `withdraw`) — fires once per call with aggregated `assets` and `shares` | Standard ERC-4626 |
 | `RedeemRequest(controller, owner, requestId, sender, assets)` | On `requestRedeem()` | `requestId`, `controller` |
-| `RequestClosed(requestId, controller, receiver, assets)` | On `redeemById()` | Pairs with `Withdraw` |
+| `RequestClosed(requestId, controller, receiver, assets)` | Once per fully-closed request — always once per `redeemById`; fires `0..N` times per `redeem` or `withdraw` call (only on full-drain branches; the trailing partial-drain request emits no `RequestClosed`) | `requestId` |
 | `Donation(from, assets)` | On `donate()` (yUTY only; UTY `donate()` reverts) | Increases yUTY share price |
 
 ### Hub composer (`UTYVaultComposer`, on Base)
