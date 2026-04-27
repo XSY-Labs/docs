@@ -74,6 +74,15 @@
             ]
           },
           {
+            "group": "Tooling",
+            "pages": [
+              "protocol/tooling/sdk",
+              "protocol/tooling/payable-router",
+              "protocol/tooling/mcp-server",
+              "protocol/tooling/x402-gateways"
+            ]
+          },
+          {
             "group": "Security",
             "pages": [
               "protocol/security"
