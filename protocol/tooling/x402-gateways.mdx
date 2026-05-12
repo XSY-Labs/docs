@@ -1,12 +1,22 @@
 ---
-title: "x402 Gateways"
-description: "HTTP 402 payment gateways for accepting UTY and yUTY over the x402 protocol."
-tag: "Coming soon"
+title: "x402 & agentic payments"
+description: "UTY and yUTY support EIP-3009 and EIP-2612 today across Base, Avalanche, and Katana. Hosted x402 endpoints are on the way."
 ---
 
-x402 gateway support is in development. It will let services price and accept UTY and yUTY payments over the [x402 protocol](https://x402.org), so HTTP clients — including AI agents — can settle requests against YieldPoint stablecoins natively.
+UTY and yUTY are built to settle agent-initiated payments. The signature standards that the [x402 protocol](https://x402.org) and similar agentic flows depend on are implemented on the token contracts today, on every chain UTY and yUTY are deployed to.
 
-Until it ships, the [Integration](/protocol/integration/overview) section documents the contract surface for direct on-chain payment flows.
+## What you can use today
 
-- **Community:** [Discord](https://discord.gg/fdxe4efA2M)
-- **Announcements:** [@xsy_fi on X](https://x.com/xsy_fi)
+- **EIP-3009** — `transferWithAuthorization` and `receiveWithAuthorization`. An agent signs an authorization off-chain; a resource server or relayer submits it on-chain. This is the signature scheme x402 settles with.
+- **EIP-2612** — `permit`. Off-chain approval signatures for adjacent flows that route through a contract rather than a direct transfer.
+
+Both are available on UTY, yUTY, and the spoke OFTs on Base, Avalanche, and Katana.
+
+**Signer caveat.** Authorization signatures are verified with ECDSA, so they must come from an EOA. Smart-account wallets that rely on ERC-1271 contract signatures (Coinbase Smart Wallet, Safe, ERC-4337 accounts) won't validate against the current token contracts. Smart-account signature support is on the roadmap.
+
+## What's coming
+
+- Hosted x402 endpoints operated by YieldPoint, so services can price and accept UTY and yUTY over HTTP without running their own facilitator.
+- A listing on agentic.market so agents can discover UTY and yUTY as settlement assets.
+
+Until the hosted endpoints land, the [Integration](/protocol/integration/overview) section documents the contract surface you need to wire EIP-3009 settlement directly.
